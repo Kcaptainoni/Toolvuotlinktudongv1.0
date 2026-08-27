@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Auto Tools Hub — link4m
 // @namespace    http://tampermonkey.net/
-// @version      6.90-link4m
+// @version      6.92-link4m
 // @description  link4m tối ưu: domain sạch (không google.com), tìm Google ổn định, UI gọn
 // @author       You
 // @match        *://*/*
@@ -1637,33 +1637,40 @@ h1{font-size:15px;color:#94a3b8;margin-bottom:12px;font-weight:600}
                 return out;
             };
 
+            // CHỈ match DOMAIN (bản gốc) — không đọc title
+            const domainMatch = (host, hint) => {
+                host = String(host || '').toLowerCase().replace(/^www\./, '');
+                hint = String(hint || '').toLowerCase().replace(/^www\./, '').replace(/\*+/g, '').replace(/\.+$/,'');
+                if (!host || !hint) return 0;
+                if (host === hint) return 100;
+                // host chứa prefix domain gợi ý (healt → healthli.co)
+                if (hint.length >= 3 && host.indexOf(hint) === 0) return 90;
+                if (hint.length >= 3 && host.indexOf(hint) >= 0) return 80;
+                // subdomain
+                if (host.endsWith('.' + hint)) return 95;
+                // hint là phần đầu trước dấu chấm: healt vs healthli.co
+                const h0 = host.split('.')[0] || '';
+                if (hint.length >= 3 && (h0.indexOf(hint) === 0 || hint.indexOf(h0) === 0) && Math.min(h0.length, hint.length) >= 3) {
+                    return 70;
+                }
+                return 0;
+            };
+
             const scoreOne = (c) => {
                 let score = 0;
                 const norm = (s) => (s || '').toLowerCase().replace(/\/$/, '').replace(/^https?:\/\//, '').replace(/^www\./, '');
                 if (targetUrl) {
                     const nt = norm(targetUrl);
                     const nr = norm(c.real);
-                    if (nr === nt || nr.startsWith(nt) || nt.startsWith(nr)) score += 1;
+                    if (nr === nt || nr.startsWith(nt) || nt.startsWith(nr)) score += 1000;
                 }
                 if (safeSuggested) {
-                    if (c.domain === safeSuggested) score += 0.9;
-                    else if (c.domain.endsWith('.' + safeSuggested) || safeSuggested.endsWith('.' + c.domain)) score += 0.75;
-                    else if (c.domain.includes(safeSuggested.split('.')[0]) || safeSuggested.includes(c.domain.split('.')[0])) score += 0.45;
-                    else if (typeof similarity === 'function') score += similarity(c.domain, safeSuggested) * 0.8;
-                    // wildcard domain healt***.co
-                    if (/\*/.test(safeSuggested)) {
-                        const parts = safeSuggested.split(/\*+/).filter(Boolean);
-                        if (parts.every(p => c.domain.includes(p.replace(/[^a-z0-9.]/gi, '')))) score += 0.7;
-                    }
+                    score += domainMatch(c.domain, safeSuggested);
                 } else {
-                    score += 0.35; // không có domain → vẫn chọn organic
+                    // Không có domain → lấy kết quả organic đầu (score thấp, chỉ khi không có gợi ý)
+                    score += 1;
                 }
-                // keyword trong title
-                try {
-                    const kw = String(keyword || '').toLowerCase();
-                    const tit = (c.title || '').toLowerCase();
-                    if (kw.length >= 3 && tit.includes(kw.slice(0, Math.min(12, kw.length)))) score += 0.25;
-                } catch (e) {}
+                // KHÔNG cộng điểm title / keyword trong title
                 return score;
             };
 
@@ -1725,14 +1732,22 @@ h1{font-size:15px;color:#94a3b8;margin-bottom:12px;font-weight:600}
 
                 console.log('[Auto Tools] Google candidates:', list.length, 'bestScore:', bestScore, best && best.domain);
 
-                // Ngưỡng thấp hơn + fallback organic đầu tiên
-                if (best && bestScore >= 0.2) {
+                // Có domain gợi ý → CHỈ vào khi khớp domain (không fallback trang khác)
+                if (safeSuggested) {
+                    if (best && bestScore >= 70) {
+                        doNavigate(best);
+                        return;
+                    }
+                    if (tried < 18) setTimeout(tryClick, 900);
+                    else console.log('[Auto Tools] Không thấy domain khớp:', safeSuggested, '— không vào trang sai');
+                    return;
+                }
+                // Không có domain → organic đầu
+                if (best && bestScore >= 1) {
                     doNavigate(best);
                     return;
                 }
                 if (tried >= 8 && list.length) {
-                    // Không khớp domain — vẫn vào kết quả đầu (organic)
-                    console.log('[Auto Tools] Fallback click organic đầu tiên');
                     doNavigate(list[0]);
                     return;
                 }
