@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Auto Tools Hub — link4m
 // @namespace    http://tampermonkey.net/
-// @version      6.92-link4m
+// @version      6.94-link4m
 // @description  link4m tối ưu: domain sạch (không google.com), tìm Google ổn định, UI gọn
 // @author       You
 // @match        *://*/*
@@ -1574,7 +1574,17 @@ h1{font-size:15px;color:#94a3b8;margin-bottom:12px;font-weight:600}
             if (typeof isJunkDomain === 'function' && isJunkDomain(suggested)) {
                 try { GM_setValue('as_smart_domain', ''); } catch (e) {}
             }
-            const safeSuggested = (typeof isJunkDomain === 'function' && isJunkDomain(suggested)) ? '' : suggested;
+            let safeSuggested = (typeof isJunkDomain === 'function' && isJunkDomain(suggested)) ? '' : suggested;
+            // Nếu domain trống nhưng keyword có URL → lấy host làm domain
+            if (!safeSuggested && keyword) {
+                try {
+                    const m = String(keyword).match(/https?:\/\/([^\s\/]+)/i);
+                    if (m) {
+                        let h = m[1].toLowerCase().replace(/^www\./, '');
+                        if (!(typeof isJunkDomain === 'function' && isJunkDomain(h))) safeSuggested = h;
+                    }
+                } catch (e) {}
+            }
             const targetUrl = GM_getValue('as_smart_target_url', '');
             const time = GM_getValue('as_smart_time', 0);
 
@@ -1603,7 +1613,7 @@ h1{font-size:15px;color:#94a3b8;margin-bottom:12px;font-weight:600}
                 const out = [];
                 const seen = new Set();
                 // Ưu tiên khối kết quả thật
-                const roots = document.querySelectorAll('#search .g, #rso .g, #search [data-sokoban-container], #rso a h3, #search a h3');
+                const roots = document.querySelectorAll('#search .g, #rso .g, #search [data-sokoban-container], #rso a h3, #search a h3, a[href][data-ved], #main a[href], div[data-hveid] a[href]');
                 const consider = (a) => {
                     if (!a || a.tagName !== 'A') return;
                     const real = resolveHref(a);
@@ -1637,41 +1647,32 @@ h1{font-size:15px;color:#94a3b8;margin-bottom:12px;font-weight:600}
                 return out;
             };
 
-            // CHỈ match DOMAIN (bản gốc) — không đọc title
+            // Match DOMAIN như bản gốc (không title). Prefix healt → healthli.co OK.
             const domainMatch = (host, hint) => {
                 host = String(host || '').toLowerCase().replace(/^www\./, '');
-                hint = String(hint || '').toLowerCase().replace(/^www\./, '').replace(/\*+/g, '').replace(/\.+$/,'');
+                hint = String(hint || '').toLowerCase().replace(/^www\./, '').replace(/\*+/g, '').trim();
                 if (!host || !hint) return 0;
+                // Bỏ TLD khỏi hint nếu user/AI ghi healt.co / healt***.co đã cắt *
+                const hintCore = hint.split('.')[0] || hint;
+                const hostCore = host.split('.')[0] || host;
                 if (host === hint) return 100;
-                // host chứa prefix domain gợi ý (healt → healthli.co)
-                if (hint.length >= 3 && host.indexOf(hint) === 0) return 90;
-                if (hint.length >= 3 && host.indexOf(hint) >= 0) return 80;
-                // subdomain
-                if (host.endsWith('.' + hint)) return 95;
-                // hint là phần đầu trước dấu chấm: healt vs healthli.co
-                const h0 = host.split('.')[0] || '';
-                if (hint.length >= 3 && (h0.indexOf(hint) === 0 || hint.indexOf(h0) === 0) && Math.min(h0.length, hint.length) >= 3) {
-                    return 70;
-                }
+                if (host.endsWith('.' + hint) || hint.endsWith('.' + host)) return 95;
+                if (hintCore.length >= 3 && hostCore.indexOf(hintCore) === 0) return 90;
+                if (hintCore.length >= 3 && host.indexOf(hintCore) >= 0) return 85;
+                if (hintCore.length >= 3 && hostCore.indexOf(hintCore) >= 0) return 80;
+                if (hintCore.length >= 4 && hintCore.indexOf(hostCore) === 0) return 75;
                 return 0;
             };
 
             const scoreOne = (c) => {
-                let score = 0;
-                const norm = (s) => (s || '').toLowerCase().replace(/\/$/, '').replace(/^https?:\/\//, '').replace(/^www\./, '');
                 if (targetUrl) {
-                    const nt = norm(targetUrl);
-                    const nr = norm(c.real);
-                    if (nr === nt || nr.startsWith(nt) || nt.startsWith(nr)) score += 1000;
+                    const norm = (x) => (x || '').toLowerCase().replace(/\/$/, '').replace(/^https?:\/\//, '').replace(/^www\./, '');
+                    const nt = norm(targetUrl), nr = norm(c.real);
+                    if (nr === nt || nr.startsWith(nt) || nt.startsWith(nr)) return 1000;
                 }
-                if (safeSuggested) {
-                    score += domainMatch(c.domain, safeSuggested);
-                } else {
-                    // Không có domain → lấy kết quả organic đầu (score thấp, chỉ khi không có gợi ý)
-                    score += 1;
-                }
-                // KHÔNG cộng điểm title / keyword trong title
-                return score;
+                if (safeSuggested) return domainMatch(c.domain, safeSuggested);
+                // Không domain: ưu tiên kết quả đầu trong list (score theo thứ tự)
+                return 1;
             };
 
             const doNavigate = (c) => {
@@ -1683,76 +1684,62 @@ h1{font-size:15px;color:#94a3b8;margin-bottom:12px;font-weight:600}
                     GM_setValue('as_force_layma', true);
                     GM_setValue('as_natural_visit', true);
                 } catch (e) {}
-                console.log('[Auto Tools] Vào link Google:', c.domain, c.real.slice(0, 80));
+                console.log('[Auto Tools] Vào link Google:', c.domain, c.real.slice(0, 100));
+                try { c.a.scrollIntoView({ block: 'center' }); } catch (e) {}
+                // Mobile: ưu tiên location.href (click hay bị chặn)
                 try {
-                    c.a.scrollIntoView({ block: 'center', behavior: 'instant' in window ? 'instant' : 'auto' });
-                } catch (e) {}
-                // Click + fallback location
-                try {
-                    const r = c.a.getBoundingClientRect();
-                    const x = r.left + r.width / 2;
-                    const y = r.top + r.height / 2;
-                    ['mousedown', 'mouseup', 'click'].forEach(type => {
-                        try {
-                            c.a.dispatchEvent(new MouseEvent(type, {
-                                bubbles: true, cancelable: true, view: window,
-                                clientX: x, clientY: y, button: 0
-                            }));
-                        } catch (e) {}
-                    });
-                    c.a.click();
-                } catch (e) {}
-                setTimeout(() => {
-                    // Vẫn còn Google → ép mở
-                    if (/google\./i.test(location.hostname)) {
-                        try { location.href = c.real; } catch (e) {}
-                    }
-                }, 1200);
+                    location.href = c.real;
+                } catch (e) {
+                    try { c.a.click(); } catch (e2) {}
+                }
             };
 
             let tried = 0;
             const tryClick = () => {
                 tried++;
-                // Bỏ qua trang consent Google
                 if (document.querySelector('#L2AGLb, button[aria-label*="Accept"], form[action*="consent"]')) {
                     try {
                         const btn = document.querySelector('#L2AGLb, button[aria-label*="Accept all"], button[aria-label*="Chấp nhận"]');
                         if (btn) btn.click();
                     } catch (e) {}
-                    if (tried < 20) setTimeout(tryClick, 1000);
+                    if (tried < 20) setTimeout(tryClick, 800);
                     return;
                 }
 
                 const list = collectCandidates();
                 let best = null, bestScore = -1;
-                for (const c of list) {
-                    const sc = scoreOne(c);
+                for (let i = 0; i < list.length; i++) {
+                    const c = list[i];
+                    let sc = scoreOne(c);
+                    // Không domain: kết quả càng trên càng cao
+                    if (!safeSuggested) sc = 100 - i;
                     if (sc > bestScore) { bestScore = sc; best = c; }
                 }
 
-                console.log('[Auto Tools] Google candidates:', list.length, 'bestScore:', bestScore, best && best.domain);
+                console.log('[Auto Tools] Google candidates:', list.length, 'bestScore:', bestScore, best && best.domain, 'hint=', safeSuggested);
 
-                // Có domain gợi ý → CHỈ vào khi khớp domain (không fallback trang khác)
                 if (safeSuggested) {
+                    // Có domain → vào khi khớp (threshold 75)
                     if (best && bestScore >= 70) {
                         doNavigate(best);
                         return;
                     }
-                    if (tried < 18) setTimeout(tryClick, 900);
-                    else console.log('[Auto Tools] Không thấy domain khớp:', safeSuggested, '— không vào trang sai');
+                    // Sau vài lần: chấp nhận khớp yếu hơn (>= 75 vẫn; thử >= 75 first)
+                    if (tried >= 6 && best && bestScore >= 70) {
+                        doNavigate(best);
+                        return;
+                    }
+                    if (tried < 20) setTimeout(tryClick, 700);
+                    else console.log('[Auto Tools] Không khớp domain', safeSuggested);
                     return;
                 }
-                // Không có domain → organic đầu
-                if (best && bestScore >= 1) {
-                    doNavigate(best);
-                    return;
-                }
-                if (tried >= 8 && list.length) {
+
+                // Không domain → organic đầu
+                if (list.length) {
                     doNavigate(list[0]);
                     return;
                 }
-                if (tried < 18) setTimeout(tryClick, 900);
-                else console.log('[Auto Tools] Hết thử — không vào được link Google');
+                if (tried < 20) setTimeout(tryClick, 700);
             };
 
             setTimeout(tryClick, 1500);
